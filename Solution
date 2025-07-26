@@ -1,0 +1,123 @@
+Cost Optimization Solution for Azure Cosmos DB Billing Records
+Overview
+To significantly reduce costs for your Azure Cosmos DB, while ensuring data availability and seamless user experience, implement a tiered storage strategy. The core idea: move billing records older than three months from Cosmos DB to Azure Blob Storage, keeping recent records in Cosmos DB for low-latency access. The existing API layer handles reads/writes without changes to the client.
+
+Proposed Architecture
+Key Components
+Azure Cosmos DB: Stores only recent (<=3 months) billing records.
+
+Azure Blob Storage: Holds archived records (>3 months) in compressed JSON or Avro format.
+
+Azure Functions/Logic Apps: Automate archival and retrieval logic.
+
+API Layer: Abstracts data store details; routes requests to correct backend.
+
+Data Access Flow
+Write: New records created in Cosmos DB only.
+
+Read:
+
+If record age ≤3 months: Fetch from Cosmos DB.
+
+If record age >3 months: If not in Cosmos DB, redirect lookup to Blob Storage; serve from there.
+
+Archive Job: Scheduled Azure Function or Logic App moves records older than 3 months from Cosmos DB to Blob Storage, then deletes them from Cosmos DB after successful copy.
+
+Architecture Diagram
+text
+            +-------------------+
+            |   Client/API      |
+            +---------+---------+
+                      |
+           [Read/Write Billing Records]
+                      |
+           +----------v----------+
+           |     API Layer       |  (no API contract change)
+           +----+----------+-----+
+                |          |
+           +----+--+   +---+-----+
+           |Cosmos|   |  Blob    |
+           | DB   |   | Storage  |
+           +----+-+   +---------++
+                |         ^
+    [Archival Function]  /
+        (every day)     /
+  (Move old records)   /
+         +------------+
+Cost Optimization Approach
+Storage Savings: Azure Blob Storage is significantly cheaper than Cosmos DB for cold/archival data.
+
+Compute Savings: Cosmos DB RU charges drop as working set size reduces.
+
+No Data Loss & No Downtime: Atomic archive, verify, then delete logic ensures zero-loss and uninterrupted DB service.
+
+Ease of Implementation: Uses built-in Azure serverless tools, maintainable with minimal ops.
+
+Implementation: Core Logic
+1. Archival Function (Pseudocode)
+python
+def archive_old_records():
+    cutoff_date = today_minus_3_months()
+    # Query Cosmos DB for records older than cutoff
+    old_records = cosmos_query(f"SELECT * FROM c WHERE c.timestamp < '{cutoff_date}'")
+    for record in old_records:
+        # Write to Blob Storage in compressed format
+        blob_client.upload_blob(record.id + ".json.gz", gzip_compress(json.dumps(record)))
+        # Delete from Cosmos DB
+        cosmos_delete(record.id)
+Schedule this function to run daily or hourly using Azure Functions and Timer Triggers.
+
+2. API Layer Read Logic (Pseudocode)
+python
+def get_billing_record(record_id):
+    record = cosmos_get(record_id)
+    if record:
+        return record
+    else:
+        # Attempt to fetch from Blob Storage if not in Cosmos
+        blob = blob_get(record_id + ".json.gz")
+        if blob:
+            return json.loads(gzip_decompress(blob))
+        else:
+            return None  # Record not found
+3. Zero-Downtime Migration Script
+Implement migration in small batches.
+
+For each batch:
+
+Copy records to Blob.
+
+Verify copy (e.g. using checksums).
+
+Delete from Cosmos DB.
+
+Monitor and log failures for retry.
+
+Example command for batch execution (using Azure CLI or Data Factory):
+
+bash
+# Pseudocode for batch archival (for actual use, integrate with SDK)
+az cosmosdb document list --filter "timestamp < cutoff_date" | \
+foreach record.id (
+    az storage blob upload --file record.json.gz --container billing-archive
+    az cosmosdb document delete --id record.id
+)
+Maintenance & Monitoring
+Set up alerts if archival or retrieval fails.
+
+Log every archival operation for audit.
+
+Validate data integrity (random checksum audits).
+
+Adjust archival policy if access patterns change.
+
+Key Benefits
+Storage cost reduced by orders of magnitude for old records.
+
+Performance for recent queries unaffected.
+
+Compliance: All data preserved, still accessible.
+
+No user-impact: Existing APIs, SLAs, and contracts intact.
+
+By following this approach, you achieve a scalable, cost-efficient, and low-complexity archival solution in serverless Azure with no technical disruption or data loss.
